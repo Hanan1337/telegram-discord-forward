@@ -18,8 +18,9 @@ FILTERED_CHANNELS = []
 UNFILTERED_CHANNELS = []
 VIP_CHANNELS = []
 SUMMARY_CHANNELS = []
+IMAGE_CHANNELS = []  # Daftar baru untuk channel gambar
 KEYWORDS = []
-SUMMARY_KEYWORDS = []  # Tambahkan variabel untuk keyword khusus summary
+SUMMARY_KEYWORDS = []
 
 def load_env():
     """Memuat variabel lingkungan dari file .env."""
@@ -54,7 +55,9 @@ def load_env():
     
     API_HASH = api_hash
     PHONE = phone
-    ADMINS = [admin.strip() for admin in admins.split(',') if admin.strip()]
+    ADMINS = [int(admin.strip()) for admin in admins.split(',') if admin.strip().isdigit()]
+    if not ADMINS:
+        logger.warning("Tidak ada admin yang valid ditemukan di .env.")
     TARGET_CHANNEL = target_channel
     GOOGLE_API_KEY = google_api_key
     DISCORD_AUTH_TOKEN = discord_auth_token
@@ -79,26 +82,24 @@ def setup_logging():
 
 def load_config():
     """Memuat konfigurasi dari channels.json, keywords.json, dan summary_keywords.json."""
-    global FILTERED_CHANNELS, UNFILTERED_CHANNELS, VIP_CHANNELS, SUMMARY_CHANNELS, KEYWORDS, SUMMARY_KEYWORDS
+    global FILTERED_CHANNELS, UNFILTERED_CHANNELS, VIP_CHANNELS, SUMMARY_CHANNELS, IMAGE_CHANNELS, KEYWORDS, SUMMARY_KEYWORDS
     try:
         with open('channels.json', 'r') as f:
             channels_data = json.load(f)
-            FILTERED_CHANNELS = [int(ch) for ch in channels_data.get('FILTERED_CHANNELS', [])]
-            UNFILTERED_CHANNELS = [int(ch) for ch in channels_data.get('UNFILTERED_CHANNELS', [])]
-            VIP_CHANNELS = [int(ch) for ch in channels_data.get('VIP_CHANNELS', [])]
-            SUMMARY_CHANNELS = [int(ch) for ch in channels_data.get('SUMMARY_CHANNELS', [])]
+            FILTERED_CHANNELS = [int(ch) if int(ch) < 0 else -1000000000000 - int(ch) for ch in channels_data.get('FILTERED_CHANNELS', [])]
+            UNFILTERED_CHANNELS = [int(ch) if int(ch) < 0 else -1000000000000 - int(ch) for ch in channels_data.get('UNFILTERED_CHANNELS', [])]
+            VIP_CHANNELS = [int(ch) if int(ch) < 0 else -1000000000000 - int(ch) for ch in channels_data.get('VIP_CHANNELS', [])]
+            SUMMARY_CHANNELS = [int(ch) if int(ch) < 0 else -1000000000000 - int(ch) for ch in channels_data.get('SUMMARY_CHANNELS', [])]
+            IMAGE_CHANNELS = [int(ch) if int(ch) < 0 else -1000000000000 - int(ch) for ch in channels_data.get('IMAGE_CHANNELS', [])]
             
-            for ch in FILTERED_CHANNELS + UNFILTERED_CHANNELS + VIP_CHANNELS + SUMMARY_CHANNELS:
-                if ch > 0:
-                    logger.warning(f"ID channel {ch} positif, seharusnya negatif untuk channel Telegram.")
-            
-            logger.info(f"Loaded channels: FILTERED={FILTERED_CHANNELS}, UNFILTERED={UNFILTERED_CHANNELS}, VIP={VIP_CHANNELS}, SUMMARY={SUMMARY_CHANNELS}")
+            logger.info(f"Loaded channels: FILTERED={FILTERED_CHANNELS}, UNFILTERED={UNFILTERED_CHANNELS}, VIP={VIP_CHANNELS}, SUMMARY={SUMMARY_CHANNELS}, IMAGE={IMAGE_CHANNELS}")
     except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
         logger.error(f"Error loading channels.json: {str(e)}")
         FILTERED_CHANNELS = []
         UNFILTERED_CHANNELS = []
         VIP_CHANNELS = []
         SUMMARY_CHANNELS = []
+        IMAGE_CHANNELS = []
 
     try:
         with open('keywords.json', 'r') as f:
@@ -119,6 +120,6 @@ def load_config():
         SUMMARY_KEYWORDS = []
 
 # Inisialisasi saat modul diimpor
-load_env()
 logger = setup_logging()
+load_env()
 load_config()
