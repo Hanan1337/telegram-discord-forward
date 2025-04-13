@@ -1,10 +1,21 @@
+# utils.py
 import re
 import aiohttp
 import requests
 from langdetect import detect
 from config import GOOGLE_API_KEY, logger
+from telethon.errors import SessionPasswordNeededError
 
 def extract_username(input_str):
+    """
+    Mengekstrak nama pengguna dari string input, menghapus '@' atau mengekstrak dari URL Telegram.
+    
+    Args:
+        input_str: String input (username atau URL).
+    
+    Returns:
+        str: Nama pengguna yang telah diekstrak, atau None jika input tidak valid.
+    """
     if not isinstance(input_str, str):
         logger.error(f"Input untuk extract_username bukan string: {input_str}")
         return None
@@ -17,6 +28,16 @@ def extract_username(input_str):
     return input_str
 
 def contains_keyword(text, keywords):
+    """
+    Memeriksa apakah teks mengandung salah satu kata kunci.
+    
+    Args:
+        text (str): Teks yang akan diperiksa.
+        keywords (list): Daftar kata kunci.
+    
+    Returns:
+        bool: True jika kata kunci ditemukan, False jika tidak.
+    """
     if not text or not keywords:
         logger.warning("Teks atau kata kunci kosong.")
         return False
@@ -24,14 +45,89 @@ def contains_keyword(text, keywords):
     text_lower = text.lower().strip()
     for keyword in keywords:
         keyword_clean = keyword.lower().strip()
-        if keyword_clean in text_lower:
+        # Gunakan pencocokan kata utuh untuk menghindari false positive
+        if re.search(r'\b' + re.escape(keyword_clean) + r'\b', text_lower):
             logger.info(f"Kata kunci '{keyword}' ditemukan di pesan: {text}")
             return True
     
     logger.info(f"Tidak ada kata kunci yang cocok di pesan: {text}")
     return False
 
+def guess_blocked_keywords(text):
+    """
+    Mencoba menduga keyword yang mungkin diblokir dalam pesan.
+    
+    Args:
+        text (str): Teks pesan.
+    
+    Returns:
+        list: Daftar kata atau frasa yang mungkin diblokir.
+    """
+    if not text:
+        return []
+
+    # Daftar pola yang sering dianggap mencurigakan
+    suspicious_patterns = [
+        r'(https?://[^\s]+)',  # Tautan
+        r'\b[A-Z]{2,}\b',      # Kata semua huruf besar (misalnya, CZ, DOJ)
+        r'\b\w+\.\w+\b',       # Domain seperti velo.xyz
+        r'\b[\w-]+\b'          # Kata umum (diambil terakhir)
+    ]
+
+    suspicious_keywords = []
+    text_lower = text.lower()
+
+    # Cek pola mencurigakan
+    for pattern in suspicious_patterns[:3]:  # Prioritaskan tautan, huruf besar, domain
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        suspicious_keywords.extend(matches)
+
+    # Jika tidak ada yang ditemukan, cek kata umum
+    if not suspicious_keywords:
+        words = re.findall(r'\b[\w-]+\b', text_lower)
+        # Ambil kata yang lebih panjang dari 3 huruf untuk mengurangi noise
+        suspicious_keywords.extend(word for word in words if len(word) > 3)
+
+    # Hapus duplikasi dan batasi jumlah
+    suspicious_keywords = list(dict.fromkeys(suspicious_keywords))[:5]
+    logger.info(f"Dugaan keyword yang diblokir: {suspicious_keywords}")
+    return suspicious_keywords
+
+def remove_markdown(text):
+    """
+    Menghapus simbol markdown dari teks.
+    
+    Args:
+        text (str): Teks yang akan dibersihkan.
+    
+    Returns:
+        str: Teks tanpa simbol markdown.
+    """
+    if not text:
+        return ""
+    
+    # Hapus simbol markdown
+    text = re.sub(r'\*\*', '', text)  # Hapus **
+    text = re.sub(r'\*', '', text)    # Hapus *
+    text = re.sub(r'__', '', text)    # Hapus __
+    text = re.sub(r'_', '', text)     # Hapus _
+    text = re.sub(r'~~', '', text)    # Hapus ~~
+    text = re.sub(r'`', '', text)     # Hapus `
+    text = re.sub(r'```', '', text)   # Hapus ```
+    
+    return text.strip()
+
 async def translate_text(text, target_lang="id"):
+    """
+    Menerjemahkan teks ke bahasa target menggunakan beberapa API terjemahan.
+    
+    Args:
+        text (str): Teks yang akan diterjemahkan.
+        target_lang (str): Kode bahasa target (default: 'id').
+    
+    Returns:
+        str: Teks yang telah diterjemahkan, atau teks asli jika gagal.
+    """
     try:
         if not text or detect(text) == "id":
             logger.info(f"Teks sudah dalam bahasa Indonesia atau kosong: {text}")
@@ -121,32 +217,39 @@ async def translate_text(text, target_lang="id"):
                 logger.critical(f"Semua API terjemahan gagal: {str(fallback_e)}")
                 return text
 
-async def login(client):
+async def login(client, code_queue):
+    """
+    Melakukan login ke klien Telegram menggunakan kode verifikasi dari antrian.
+    
+    Args:
+        client: Objek TelegramClient.
+        code_queue: Antrian asinkron untuk kode verifikasi.
+    """
     from config import PHONE
     try:
         await client.start(phone=PHONE)
         if not await client.is_user_authorized():
             logger.info("Memulai proses login...")
-            for _ in range(3):
-                code = input("Masukkan kode verifikasi yang diterima: ")
-                try:
-                    await client.sign_in(PHONE, code)
-                    break
-                except Exception as e:
-                    if "Two-steps verification" in str(e):
-                        password = input("Masukkan kata sandi 2FA kamu: ")
-                        await client.sign_in(password=password)
-                        break
-                    logger.error(f"Kode salah: {str(e)}")
-            else:
-                logger.critical("Gagal login setelah 3 percobaan.")
-                raise Exception("Gagal login setelah 3 percobaan.")
-        logger.info("Login berhasil!")
+            logger.info("Kirim kode verifikasi (5 digit) ke bot melalui pesan.")
+            code = await code_queue.get()  # Tunggu kode dari antrian
+            try:
+                await client.sign_in(PHONE, code)
+            except SessionPasswordNeededError:
+                logger.info("Akun memerlukan kata sandi 2FA.")
+                password = input("Masukkan kata sandi 2FA kamu: ")  # Ganti jika diperlukan
+                await client.sign_in(password=password)
+            logger.info("Login berhasil!")
     except Exception as e:
         logger.critical(f"Login gagal: {str(e)}")
         raise
 
 async def shutdown_client(client):
+    """
+    Menghentikan klien Telegram dengan aman.
+    
+    Args:
+        client: Objek TelegramClient.
+    """
     logger.info("Menghentikan klien...")
     try:
         await client.disconnect()
